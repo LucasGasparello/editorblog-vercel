@@ -19,6 +19,7 @@ import {
 } from "recharts";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
+import RichTextEditor from "@/components/RichTextEditor";
 
 type ChartPoint = { label: string; value: number; color?: string };
 
@@ -107,9 +108,7 @@ function parseChart(raw: string): ChartPoint[] {
 
 const Index = () => {
   const navigate = useNavigate();
-  const [isAdmin, setIsAdmin] = useState<boolean>(
-    () => typeof window !== "undefined" && localStorage.getItem("diario-admin") === "1",
-  );
+  const isAdmin = true;
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [title, setTitle] = useState("");
@@ -175,9 +174,8 @@ const Index = () => {
     loadPosts();
   }, [loadPosts]);
 
-  const handleLogout = () => {
-    localStorage.removeItem("diario-admin");
-    setIsAdmin(false);
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     toast.success("Logout realizado");
   };
 
@@ -338,20 +336,7 @@ const Index = () => {
                 Notícias, vídeos e infográficos sobre o cenário político.
               </p>
             </div>
-            <div className="shrink-0">
-              {isAdmin ? (
-                <div className="flex flex-col items-end gap-2">
-                  <Badge>Admin</Badge>
-                  <Button variant="outline" size="sm" onClick={handleLogout}>
-                    Sair
-                  </Button>
-                </div>
-              ) : (
-                <Button variant="outline" size="sm" onClick={() => navigate("/login")}>
-                  Login admin
-                </Button>
-              )}
-            </div>
+            <div className="shrink-0" />
           </div>
         </div>
       </header>
@@ -404,11 +389,10 @@ const Index = () => {
                     Por <span className="font-medium">{p.author}</span>
                   </p>
 
-                  <div className="mt-6 space-y-4 text-foreground leading-relaxed">
-                    {p.body.split("\n").filter(Boolean).map((para, i) => (
-                      <p key={i}>{para}</p>
-                    ))}
-                  </div>
+                  <div
+                    className="mt-6 prose prose-sm max-w-none text-foreground"
+                    dangerouslySetInnerHTML={{ __html: p.body }}
+                  />
 
                   {p.videoFile ? (
                     <div className="mt-8 overflow-hidden rounded-md border border-border">
@@ -574,15 +558,8 @@ const Index = () => {
                     </div>
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="body">Texto *</Label>
-                    <Textarea
-                      id="body"
-                      value={body}
-                      onChange={(e) => setBody(e.target.value)}
-                      rows={8}
-                      placeholder="Escreva a matéria. Separe parágrafos com Enter."
-                      maxLength={10000}
-                    />
+                    <Label>Texto *</Label>
+                    <RichTextEditor value={body} onChange={setBody} />
                   </div>
                   <div className="grid gap-2">
                     <Label htmlFor="video">Vídeo do Google Drive (URL)</Label>

@@ -5,22 +5,25 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
-
-const ADMIN_PASSWORD = "admin123";
+import { supabase } from "@/lib/supabase";
 
 const Login = () => {
   const navigate = useNavigate();
-  const [loginPwd, setLoginPwd] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleLogin = (e: FormEvent) => {
+  const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
-    if (loginPwd === ADMIN_PASSWORD) {
-      localStorage.setItem("diario-admin", "1");
-      toast.success("Login admin realizado");
-      navigate("/");
-    } else {
-      toast.error("Senha incorreta");
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setLoading(false);
+    if (error) {
+      toast.error("Email ou senha incorretos");
+      return;
     }
+    toast.success("Login realizado");
+    navigate("/");
   };
 
   return (
@@ -45,18 +48,30 @@ const Login = () => {
           <CardContent>
             <form onSubmit={handleLogin} className="grid gap-5">
               <div className="grid gap-2">
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="admin@exemplo.com"
+                  autoFocus
+                  required
+                />
+              </div>
+              <div className="grid gap-2">
                 <Label htmlFor="password">Senha</Label>
                 <Input
                   id="password"
                   type="password"
-                  value={loginPwd}
-                  onChange={(e) => setLoginPwd(e.target.value)}
-                  placeholder="Digite a senha de administrador"
-                  autoFocus
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Sua senha"
+                  required
                 />
               </div>
-              <Button type="submit" size="lg" className="w-full">
-                Entrar
+              <Button type="submit" size="lg" className="w-full" disabled={loading}>
+                {loading ? "Entrando…" : "Entrar"}
               </Button>
               <Button
                 type="button"
