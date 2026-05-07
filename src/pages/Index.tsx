@@ -1,4 +1,5 @@
 import { useState, FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -96,14 +97,11 @@ function parseChart(raw: string): ChartPoint[] {
     .filter((p) => p.label);
 }
 
-const ADMIN_PASSWORD = "admin123";
-
 const Index = () => {
+  const navigate = useNavigate();
   const [isAdmin, setIsAdmin] = useState<boolean>(
     () => typeof window !== "undefined" && localStorage.getItem("diario-admin") === "1",
   );
-  const [loginOpen, setLoginOpen] = useState(false);
-  const [loginPwd, setLoginPwd] = useState("");
   const [posts, setPosts] = useState<Post[]>(initialPosts);
   const [title, setTitle] = useState("");
   const [subtitle, setSubtitle] = useState("");
@@ -115,25 +113,11 @@ const Index = () => {
   const [chartTitle, setChartTitle] = useState("");
   const [chartRaw, setChartRaw] = useState("");
 
-  const handleLogin = (e: FormEvent) => {
-    e.preventDefault();
-    if (loginPwd === ADMIN_PASSWORD) {
-      localStorage.setItem("diario-admin", "1");
-      setIsAdmin(true);
-      setLoginOpen(false);
-      setLoginPwd("");
-      toast.success("Login admin realizado");
-    } else {
-      toast.error("Senha incorreta");
-    }
-  };
-
   const handleLogout = () => {
     localStorage.removeItem("diario-admin");
     setIsAdmin(false);
     toast.success("Logout realizado");
   };
-
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -194,31 +178,8 @@ const Index = () => {
                     Sair
                   </Button>
                 </div>
-              ) : loginOpen ? (
-                <form onSubmit={handleLogin} className="flex gap-2">
-                  <Input
-                    type="password"
-                    value={loginPwd}
-                    onChange={(e) => setLoginPwd(e.target.value)}
-                    placeholder="Senha admin"
-                    className="h-9 w-40"
-                    autoFocus
-                  />
-                  <Button type="submit" size="sm">Entrar</Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setLoginOpen(false);
-                      setLoginPwd("");
-                    }}
-                  >
-                    Cancelar
-                  </Button>
-                </form>
               ) : (
-                <Button variant="outline" size="sm" onClick={() => setLoginOpen(true)}>
+                <Button variant="outline" size="sm" onClick={() => navigate("/login")}>
                   Login admin
                 </Button>
               )}
