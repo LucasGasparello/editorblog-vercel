@@ -1,4 +1,4 @@
-import { useState, FormEvent } from "react";
+import { useState, FormEvent, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import { toast } from "sonner";
+import { supabase } from "@/lib/supabase";
 
 type ChartPoint = { label: string; value: number; color?: string };
 
@@ -49,7 +50,14 @@ type Post = {
   comments: Comment[];
 };
 
-const initialPosts: Post[] = [];
+const SESSION_ID = (() => {
+  let sid = localStorage.getItem("session-id");
+  if (!sid) {
+    sid = crypto.randomUUID();
+    localStorage.setItem("session-id", sid);
+  }
+  return sid;
+})();
 
 function parseDrive(url: string): string | undefined {
   if (!url) return undefined;
@@ -102,7 +110,8 @@ const Index = () => {
   const [isAdmin, setIsAdmin] = useState<boolean>(
     () => typeof window !== "undefined" && localStorage.getItem("diario-admin") === "1",
   );
-  const [posts, setPosts] = useState<Post[]>(initialPosts);
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [loading, setLoading] = useState(true);
   const [title, setTitle] = useState("");
   const [subtitle, setSubtitle] = useState("");
   const [author, setAuthor] = useState("");
@@ -113,35 +122,90 @@ const Index = () => {
   const [chartTitle, setChartTitle] = useState("");
   const [chartRaw, setChartRaw] = useState("");
 
+  const loadPosts = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data: postsData, error } = await supabase
+        .from("posts")
+        .select("*, comments(*)")
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+
+      const { data: likesData } = await supabase
+        .from("likes")
+        .select("post_id")
+        .eq("session_id", SESSION_ID);
+
+      const likedIds = new Set(likesData?.map((l) => l.post_id) ?? []);
+
+      setPosts(
+        (postsData ?? []).map((p) => ({
+          id: p.id,
+          title: p.title,
+          subtitle: p.subtitle ?? "",
+          author: p.author,
+          category: p.category,
+          body: p.body,
+          videoUrl: p.video_url ?? undefined,
+          videoFile: p.video_file ?? undefined,
+          chartTitle: p.chart_title ?? undefined,
+          chartData: p.chart_data ?? undefined,
+          createdAt: p.created_at,
+          likes: p.likes,
+          likedByMe: likedIds.has(p.id),
+          comments: ((p.comments ?? []) as { id: string; author: string; text: string; created_at: string }[])
+            .map((c) => ({
+              id: c.id,
+              author: c.author,
+              text: c.text,
+              createdAt: c.created_at,
+            }))
+            .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
+        })),
+      );
+    } catch {
+      toast.error("Erro ao carregar publicações");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPosts();
+  }, [loadPosts]);
+
   const handleLogout = () => {
     localStorage.removeItem("diario-admin");
     setIsAdmin(false);
     toast.success("Logout realizado");
   };
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!title.trim() || !body.trim()) {
       toast.error("Título e texto são obrigatórios");
       return;
     }
     const chartData = parseChart(chartRaw);
-    const newPost: Post = {
-      id: crypto.randomUUID(),
+
+    const { error } = await supabase.from("posts").insert({
       title: title.trim(),
-      subtitle: subtitle.trim(),
+      subtitle: subtitle.trim() || null,
       author: author.trim() || "Redação",
       category: category.trim() || "Política",
       body: body.trim(),
-      videoUrl: parseDrive(video.trim()),
-      videoFile,
-      chartTitle: chartTitle.trim() || undefined,
-      chartData: chartData.length ? chartData : undefined,
-      createdAt: new Date().toISOString(),
-      likes: 0,
-      comments: [],
-    };
-    setPosts([newPost, ...posts]);
+      video_url: parseDrive(video.trim()) || null,
+      video_file: videoFile || null,
+      chart_title: chartTitle.trim() || null,
+      chart_data: chartData.length ? chartData : null,
+    });
+
+    if (error) {
+      toast.error("Erro ao publicar");
+      return;
+    }
+
     setTitle("");
     setSubtitle("");
     setAuthor("");
@@ -152,6 +216,110 @@ const Index = () => {
     setChartTitle("");
     setChartRaw("");
     toast.success("Notícia publicada");
+    await loadPosts();
+  };
+
+  const handleDeletePost = async (id: string) => {
+    const { error } = await supabase.from("posts").delete().eq("id", id);
+    if (error) {
+      toast.error("Erro ao remover");
+      return;
+    }
+    setPosts((prev) => prev.filter((x) => x.id !== id));
+    toast.success("Notícia removida");
+  };
+
+  const handleLike = async (post: Post) => {
+    if (post.likedByMe) {
+      setPosts((prev) =>
+        prev.map((x) =>
+          x.id === post.id ? { ...x, likedByMe: false, likes: x.likes - 1 } : x,
+        ),
+      );
+      await supabase
+        .from("likes")
+        .delete()
+        .eq("post_id", post.id)
+        .eq("session_id", SESSION_ID);
+      await supabase
+        .from("posts")
+        .update({ likes: post.likes - 1 })
+        .eq("id", post.id);
+    } else {
+      setPosts((prev) =>
+        prev.map((x) =>
+          x.id === post.id ? { ...x, likedByMe: true, likes: x.likes + 1 } : x,
+        ),
+      );
+      const { error } = await supabase
+        .from("likes")
+        .insert({ post_id: post.id, session_id: SESSION_ID });
+      if (!error) {
+        await supabase
+          .from("posts")
+          .update({ likes: post.likes + 1 })
+          .eq("id", post.id);
+      } else {
+        setPosts((prev) =>
+          prev.map((x) =>
+            x.id === post.id ? { ...x, likedByMe: false, likes: x.likes - 1 } : x,
+          ),
+        );
+      }
+    }
+  };
+
+  const handleAddComment = async (postId: string, form: HTMLFormElement) => {
+    const fd = new FormData(form);
+    const cAuthor = String(fd.get("cAuthor") || "").trim() || "Anônimo";
+    const cText = String(fd.get("cText") || "").trim();
+    if (!cText) {
+      toast.error("Escreva um comentário");
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("comments")
+      .insert({ post_id: postId, author: cAuthor, text: cText })
+      .select()
+      .single();
+
+    if (error) {
+      toast.error("Erro ao comentar");
+      return;
+    }
+
+    const newComment: Comment = {
+      id: data.id,
+      author: data.author,
+      text: data.text,
+      createdAt: data.created_at,
+    };
+
+    setPosts((prev) =>
+      prev.map((x) =>
+        x.id === postId ? { ...x, comments: [...x.comments, newComment] } : x,
+      ),
+    );
+    form.reset();
+  };
+
+  const handleDeleteComment = async (postId: string, commentId: string) => {
+    const { error } = await supabase
+      .from("comments")
+      .delete()
+      .eq("id", commentId);
+    if (error) {
+      toast.error("Erro ao remover comentário");
+      return;
+    }
+    setPosts((prev) =>
+      prev.map((x) =>
+        x.id === postId
+          ? { ...x, comments: x.comments.filter((c) => c.id !== commentId) }
+          : x,
+      ),
+    );
   };
 
   return (
@@ -196,203 +364,164 @@ const Index = () => {
           </TabsList>
 
           <TabsContent value="feed" className="space-y-10">
-            {posts.length === 0 && (
+            {loading ? (
+              <p className="text-muted-foreground">Carregando...</p>
+            ) : posts.length === 0 ? (
               <p className="text-muted-foreground">Nenhuma notícia publicada.</p>
-            )}
-            {posts.map((p) => (
-              <article
-                key={p.id}
-                className="rounded-lg border border-border bg-card p-8 shadow-sm"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <Badge>{p.category}</Badge>
-                    <span className="text-xs text-muted-foreground">
-                      {new Date(p.createdAt).toLocaleString("pt-BR")}
-                    </span>
+            ) : (
+              posts.map((p) => (
+                <article
+                  key={p.id}
+                  className="rounded-lg border border-border bg-card p-8 shadow-sm"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <Badge>{p.category}</Badge>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(p.createdAt).toLocaleString("pt-BR")}
+                      </span>
+                    </div>
+                    {isAdmin && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeletePost(p.id)}
+                      >
+                        Remover
+                      </Button>
+                    )}
                   </div>
-                  {isAdmin && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setPosts((prev) => prev.filter((x) => x.id !== p.id));
-                        toast.success("Notícia removida");
+                  <h2 className="mt-4 font-serif text-3xl text-foreground">
+                    {p.title}
+                  </h2>
+                  {p.subtitle && (
+                    <p className="mt-2 text-lg text-muted-foreground">
+                      {p.subtitle}
+                    </p>
+                  )}
+                  <p className="mt-3 text-sm text-foreground/70">
+                    Por <span className="font-medium">{p.author}</span>
+                  </p>
+
+                  <div className="mt-6 space-y-4 text-foreground leading-relaxed">
+                    {p.body.split("\n").filter(Boolean).map((para, i) => (
+                      <p key={i}>{para}</p>
+                    ))}
+                  </div>
+
+                  {p.videoFile ? (
+                    <div className="mt-8 overflow-hidden rounded-md border border-border">
+                      <video src={p.videoFile} controls className="h-full w-full" />
+                    </div>
+                  ) : p.videoUrl ? (
+                    <div className="mt-8 aspect-video overflow-hidden rounded-md border border-border">
+                      <iframe
+                        src={p.videoUrl}
+                        title="vídeo"
+                        className="h-full w-full"
+                        allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen
+                      />
+                    </div>
+                  ) : null}
+
+                  {p.chartData && p.chartData.length > 0 && (
+                    <div className="mt-8 rounded-md bg-secondary p-6">
+                      {p.chartTitle && (
+                        <h3 className="mb-4 font-serif text-xl text-secondary-foreground">
+                          {p.chartTitle}
+                        </h3>
+                      )}
+                      <div className="h-72 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={p.chartData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                            <XAxis dataKey="label" stroke="hsl(var(--muted-foreground))" />
+                            <YAxis stroke="hsl(var(--muted-foreground))" />
+                            <Tooltip
+                              contentStyle={{
+                                background: "hsl(var(--card))",
+                                border: "1px solid hsl(var(--border))",
+                                borderRadius: 8,
+                              }}
+                            />
+                            <Bar dataKey="value" radius={[6, 6, 0, 0]}>
+                              {p.chartData.map((entry, idx) => (
+                                <Cell
+                                  key={idx}
+                                  fill={entry.color || DEFAULT_COLORS[idx % DEFAULT_COLORS.length]}
+                                />
+                              ))}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="mt-8 border-t border-border pt-6">
+                    <div className="flex items-center gap-3">
+                      <Button
+                        type="button"
+                        variant={p.likedByMe ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => handleLike(p)}
+                      >
+                        ♥ {p.likes}
+                      </Button>
+                      <span className="text-sm text-muted-foreground">
+                        {p.comments.length} comentário{p.comments.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+
+                    <form
+                      className="mt-4 grid gap-2 md:grid-cols-[1fr_2fr_auto]"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        handleAddComment(p.id, e.currentTarget as HTMLFormElement);
                       }}
                     >
-                      Remover
-                    </Button>
-                  )}
-                </div>
-                <h2 className="mt-4 font-serif text-3xl text-foreground">
-                  {p.title}
-                </h2>
-                {p.subtitle && (
-                  <p className="mt-2 text-lg text-muted-foreground">
-                    {p.subtitle}
-                  </p>
-                )}
-                <p className="mt-3 text-sm text-foreground/70">
-                  Por <span className="font-medium">{p.author}</span>
-                </p>
+                      <Input name="cAuthor" placeholder="Seu nome" maxLength={60} />
+                      <Input name="cText" placeholder="Escreva um comentário" maxLength={500} />
+                      <Button type="submit" size="sm">Comentar</Button>
+                    </form>
 
-                <div className="mt-6 space-y-4 text-foreground leading-relaxed">
-                  {p.body.split("\n").filter(Boolean).map((para, i) => (
-                    <p key={i}>{para}</p>
-                  ))}
-                </div>
-
-                {p.videoFile ? (
-                  <div className="mt-8 overflow-hidden rounded-md border border-border">
-                    <video src={p.videoFile} controls className="h-full w-full" />
-                  </div>
-                ) : p.videoUrl ? (
-                  <div className="mt-8 aspect-video overflow-hidden rounded-md border border-border">
-                    <iframe
-                      src={p.videoUrl}
-                      title="vídeo"
-                      className="h-full w-full"
-                      allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                    />
-                  </div>
-                ) : null}
-
-                {p.chartData && p.chartData.length > 0 && (
-                  <div className="mt-8 rounded-md bg-secondary p-6">
-                    {p.chartTitle && (
-                      <h3 className="mb-4 font-serif text-xl text-secondary-foreground">
-                        {p.chartTitle}
-                      </h3>
-                    )}
-                    <div className="h-72 w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={p.chartData}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                          <XAxis dataKey="label" stroke="hsl(var(--muted-foreground))" />
-                          <YAxis stroke="hsl(var(--muted-foreground))" />
-                          <Tooltip
-                            contentStyle={{
-                              background: "hsl(var(--card))",
-                              border: "1px solid hsl(var(--border))",
-                              borderRadius: 8,
-                            }}
-                          />
-                          <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-                            {p.chartData.map((entry, idx) => (
-                              <Cell
-                                key={idx}
-                                fill={entry.color || DEFAULT_COLORS[idx % DEFAULT_COLORS.length]}
-                              />
-                            ))}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                )}
-
-                <div className="mt-8 border-t border-border pt-6">
-                  <div className="flex items-center gap-3">
-                    <Button
-                      type="button"
-                      variant={p.likedByMe ? "default" : "outline"}
-                      size="sm"
-                      onClick={() =>
-                        setPosts((prev) =>
-                          prev.map((x) =>
-                            x.id === p.id
-                              ? {
-                                  ...x,
-                                  likedByMe: !x.likedByMe,
-                                  likes: x.likes + (x.likedByMe ? -1 : 1),
-                                }
-                              : x,
-                          ),
-                        )
-                      }
-                    >
-                      ♥ {p.likes}
-                    </Button>
-                    <span className="text-sm text-muted-foreground">
-                      {p.comments.length} comentário{p.comments.length === 1 ? "" : "s"}
-                    </span>
-                  </div>
-
-                  <form
-                    className="mt-4 grid gap-2 md:grid-cols-[1fr_2fr_auto]"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const form = e.currentTarget as HTMLFormElement;
-                      const fd = new FormData(form);
-                      const cAuthor = String(fd.get("cAuthor") || "").trim() || "Anônimo";
-                      const cText = String(fd.get("cText") || "").trim();
-                      if (!cText) {
-                        toast.error("Escreva um comentário");
-                        return;
-                      }
-                      const newComment: Comment = {
-                        id: crypto.randomUUID(),
-                        author: cAuthor,
-                        text: cText,
-                        createdAt: new Date().toISOString(),
-                      };
-                      setPosts((prev) =>
-                        prev.map((x) =>
-                          x.id === p.id ? { ...x, comments: [...x.comments, newComment] } : x,
-                        ),
-                      );
-                      form.reset();
-                    }}
-                  >
-                    <Input name="cAuthor" placeholder="Seu nome" maxLength={60} />
-                    <Input name="cText" placeholder="Escreva um comentário" maxLength={500} />
-                    <Button type="submit" size="sm">Comentar</Button>
-                  </form>
-
-                  {p.comments.length > 0 && (
-                    <ul className="mt-5 space-y-3">
-                      {p.comments.map((c) => (
-                        <li
-                          key={c.id}
-                          className="rounded-md bg-secondary p-3 text-sm"
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="font-medium text-secondary-foreground">
-                              {c.author}
-                            </span>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-muted-foreground">
-                                {new Date(c.createdAt).toLocaleString("pt-BR")}
+                    {p.comments.length > 0 && (
+                      <ul className="mt-5 space-y-3">
+                        {p.comments.map((c) => (
+                          <li
+                            key={c.id}
+                            className="rounded-md bg-secondary p-3 text-sm"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="font-medium text-secondary-foreground">
+                                {c.author}
                               </span>
-                              {isAdmin && (
-                                <button
-                                  type="button"
-                                  className="text-xs text-muted-foreground hover:text-foreground"
-                                  onClick={() =>
-                                    setPosts((prev) =>
-                                      prev.map((x) =>
-                                        x.id === p.id
-                                          ? { ...x, comments: x.comments.filter((k) => k.id !== c.id) }
-                                          : x,
-                                      ),
-                                    )
-                                  }
-                                >
-                                  remover
-                                </button>
-                              )}
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-muted-foreground">
+                                  {new Date(c.createdAt).toLocaleString("pt-BR")}
+                                </span>
+                                {isAdmin && (
+                                  <button
+                                    type="button"
+                                    className="text-xs text-muted-foreground hover:text-foreground"
+                                    onClick={() => handleDeleteComment(p.id, c.id)}
+                                  >
+                                    remover
+                                  </button>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                          <p className="mt-1 text-foreground/80">{c.text}</p>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </article>
-            ))}
+                            <p className="mt-1 text-foreground/80">{c.text}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </article>
+              ))
+            )}
           </TabsContent>
 
           <TabsContent value="new">
