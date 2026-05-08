@@ -1,5 +1,6 @@
 import { useState, FormEvent, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import { Session } from "@supabase/supabase-js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -108,7 +109,8 @@ function parseChart(raw: string): ChartPoint[] {
 
 const Index = () => {
   const navigate = useNavigate();
-  const isAdmin = true;
+  const [session, setSession] = useState<Session | null>(null);
+  const isAdmin = session !== null;
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [title, setTitle] = useState("");
@@ -168,6 +170,12 @@ const Index = () => {
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -336,7 +344,20 @@ const Index = () => {
                 Notícias, vídeos e infográficos sobre o cenário político.
               </p>
             </div>
-            <div className="shrink-0" />
+            <div className="shrink-0">
+              {isAdmin ? (
+                <div className="flex flex-col items-end gap-2">
+                  <Badge>Admin</Badge>
+                  <Button variant="outline" size="sm" onClick={handleLogout}>
+                    Sair
+                  </Button>
+                </div>
+              ) : (
+                <Button variant="outline" size="sm" onClick={() => navigate("/login")}>
+                  Login admin
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       </header>
@@ -459,17 +480,30 @@ const Index = () => {
                       </span>
                     </div>
 
-                    <form
-                      className="mt-4 grid gap-2 md:grid-cols-[1fr_2fr_auto]"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        handleAddComment(p.id, e.currentTarget as HTMLFormElement);
-                      }}
-                    >
-                      <Input name="cAuthor" placeholder="Seu nome" maxLength={60} />
-                      <Input name="cText" placeholder="Escreva um comentário" maxLength={500} />
-                      <Button type="submit" size="sm">Comentar</Button>
-                    </form>
+                    {isAdmin ? (
+                      <form
+                        className="mt-4 grid gap-2 md:grid-cols-[1fr_2fr_auto]"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          handleAddComment(p.id, e.currentTarget as HTMLFormElement);
+                        }}
+                      >
+                        <Input name="cAuthor" placeholder="Seu nome" maxLength={60} />
+                        <Input name="cText" placeholder="Escreva um comentário" maxLength={500} />
+                        <Button type="submit" size="sm">Comentar</Button>
+                      </form>
+                    ) : (
+                      <p className="mt-4 text-sm text-muted-foreground">
+                        <button
+                          type="button"
+                          className="underline hover:text-foreground"
+                          onClick={() => navigate("/login")}
+                        >
+                          Faça login
+                        </button>{" "}
+                        para comentar.
+                      </p>
+                    )}
 
                     {p.comments.length > 0 && (
                       <ul className="mt-5 space-y-3">
